@@ -12,9 +12,6 @@ use std::{
 };
 use updater::{AppVersion, UpdateInfo, UpdateUrgency};
 
-const GITHUB_OWNER: &str = "slopcorpreal";
-const GITHUB_REPO: &str = "slop---6...";
-
 fn current_app_version() -> AppVersion {
     updater::AppVersion::with_commit_count_minor(
         env!("CARGO_PKG_VERSION"),
@@ -25,6 +22,17 @@ fn current_app_version() -> AppVersion {
         minor: 0,
         patch: 0,
     }))
+}
+
+fn parse_repository_owner_and_name() -> Option<(String, String)> {
+    let repo_url = env!("CARGO_PKG_REPOSITORY");
+    let parts: Vec<&str> = repo_url.trim_end_matches('/').split('/').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let owner = parts[parts.len() - 2].to_string();
+    let repo = parts[parts.len() - 1].to_string();
+    Some((owner, repo))
 }
 
 fn version_string(version: AppVersion) -> String {
@@ -65,12 +73,15 @@ impl Default for ChronoSubApp {
             result_rx: None,
             save_status: None,
             current_version,
-            update_rx: Some(updater::spawn_update_check(
-                GITHUB_OWNER,
-                GITHUB_REPO,
-                current_version,
-                env!("CARGO_PKG_NAME"),
-            )),
+            update_rx: parse_repository_owner_and_name().map(|(owner, repo)| {
+                updater::spawn_update_check(
+                    owner,
+                    repo,
+                    current_version,
+                    env!("CARGO_PKG_NAME").to_string(),
+                    env!("CARGO_PKG_VERSION").to_string(),
+                )
+            }),
             available_update: None,
             update_error: None,
         }
@@ -177,7 +188,7 @@ impl eframe::App for ChronoSubApp {
             ui.heading("ChronoSub ⚡");
             ui.label("Blazing-fast subtitle synchronization — no Python, no FFmpeg.");
             ui.label(format!(
-                "Version {} (minor = commit count)",
+                "Version {}",
                 version_string(self.current_version)
             ));
             if let Some(update) = &self.available_update {
@@ -353,7 +364,7 @@ impl eframe::App for ChronoSubApp {
                     .resizable(false)
                     .show(ctx, |ui| {
                         ui.label(format!(
-                            "A major release ({}) is available and should be installed before further work.",
+                            "A major release ({}) is available and contains critical changes that should be installed.",
                             version_string(update.latest_version)
                         ));
                         ui.label(&update.instructions);

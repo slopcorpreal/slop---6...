@@ -1,6 +1,9 @@
 use serde::Deserialize;
 use std::{env, path::Path, sync::mpsc, thread, time::Duration};
 
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+const READ_TIMEOUT_SECS: u64 = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AppVersion {
     pub major: u64,
@@ -61,6 +64,7 @@ pub struct UpdateInfo {
 enum InstallKind {
     CargoInstalled,
     StandaloneBinary,
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,7 +73,10 @@ struct LatestRelease {
     html_url: String,
 }
 
-fn detect_install_kind(exe_path: &Path) -> InstallKind {
+fn detect_install_kind(exe_path: Option<&Path>) -> InstallKind {
+    let Some(exe_path) = exe_path else {
+        return InstallKind::Unknown;
+    };
     let display = exe_path.to_string_lossy();
     if display.contains(".cargo/bin") {
         InstallKind::CargoInstalled
@@ -92,12 +99,16 @@ fn platform_hint() -> &'static str {
 
 fn update_instructions(kind: InstallKind, package_name: &str) -> String {
     match kind {
-        InstallKind::CargoInstalled => format!(
-            "Installed via cargo. Update with:\n\ncargo install --force {package_name}"
-        ),
+        InstallKind::CargoInstalled => {
+            format!("Installed via cargo. Update with:\n\ncargo install --force {}", package_name)
+        }
         InstallKind::StandaloneBinary => format!(
             "Standalone binary detected. Download the {platform} asset from GitHub releases and replace your current executable.",
             platform = platform_hint()
+        ),
+        InstallKind::Unknown => format!(
+            "Could not detect installation type. For cargo installs use `cargo install --force {}`; otherwise download your platform binary from GitHub releases.",
+            package_name
         ),
     }
 }
@@ -107,15 +118,16 @@ fn fetch_update_info(
     repo: &str,
     current: AppVersion,
     package_name: &str,
-    exe_path: &Path,
+    package_version: &str,
+    exe_path: Option<&Path>,
 ) -> Result<UpdateInfo, String> {
     let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
     let release: LatestRelease = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(8))
+        .timeout_connect(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .timeout_read(Duration::from_secs(READ_TIMEOUT_SECS))
         .build()
         .get(&url)
-        .set("User-Agent", "chronosub-updater")
+        .set("User-Agent", &format!("{package_name}/{package_version}"))
         .call()
         .map_err(|e| format!("Update check failed: {e}"))?
         .into_json()
@@ -133,15 +145,23 @@ fn fetch_update_info(
 }
 
 pub fn spawn_update_check(
-    owner: &'static str,
-    repo: &'static str,
+    owner: String,
+    repo: String,
     current: AppVersion,
-    package_name: &'static str,
+    package_name: String,
+    package_version: String,
 ) -> mpsc::Receiver<Result<UpdateInfo, String>> {
-    let exe_path = env::current_exe().unwrap_or_default();
+    let exe_path = env::current_exe().ok();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let result = fetch_update_info(owner, repo, current, package_name, &exe_path);
+        let result = fetch_update_info(
+            &owner,
+            &repo,
+            current,
+            &package_name,
+            &package_version,
+            exe_path.as_deref(),
+        );
         let _ = tx.send(result);
     });
     rx
