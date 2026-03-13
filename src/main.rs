@@ -1,13 +1,43 @@
 mod engine;
 mod subtitle;
+mod updater;
 
 use eframe::egui;
 use engine::AlignmentResult;
 use std::{
+    env,
     path::PathBuf,
     sync::mpsc,
     time::Duration,
 };
+use updater::{AppVersion, UpdateInfo, UpdateUrgency};
+
+fn current_app_version() -> AppVersion {
+    updater::AppVersion::with_commit_count_minor(
+        env!("CARGO_PKG_VERSION"),
+        env!("CHRONOSUB_COMMIT_COUNT"),
+    )
+    .unwrap_or_else(|| AppVersion::parse(env!("CARGO_PKG_VERSION")).unwrap_or(AppVersion {
+        major: 0,
+        minor: 0,
+        patch: 0,
+    }))
+}
+
+fn parse_repository_owner_and_name() -> Option<(String, String)> {
+    let repo_url = env!("CARGO_PKG_REPOSITORY");
+    let parts: Vec<&str> = repo_url.trim_end_matches('/').split('/').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let owner = parts[parts.len() - 2].to_string();
+    let repo = parts[parts.len() - 1].to_string();
+    Some((owner, repo))
+}
+
+fn version_string(version: AppVersion) -> String {
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
+}
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -23,10 +53,15 @@ struct ChronoSubApp {
     processing: bool,
     result_rx: Option<mpsc::Receiver<Result<AlignmentResult, String>>>,
     save_status: Option<String>,
+    current_version: AppVersion,
+    update_rx: Option<mpsc::Receiver<Result<UpdateInfo, String>>>,
+    available_update: Option<UpdateInfo>,
+    update_error: Option<String>,
 }
 
 impl Default for ChronoSubApp {
     fn default() -> Self {
+        let current_version = current_app_version();
         Self {
             video_path: None,
             sub_path: None,
@@ -37,6 +72,18 @@ impl Default for ChronoSubApp {
             processing: false,
             result_rx: None,
             save_status: None,
+            current_version,
+            update_rx: parse_repository_owner_and_name().map(|(owner, repo)| {
+                updater::spawn_update_check(
+                    owner,
+                    repo,
+                    current_version,
+                    env!("CARGO_PKG_NAME").to_string(),
+                    env!("CARGO_PKG_VERSION").to_string(),
+                )
+            }),
+            available_update: None,
+            update_error: None,
         }
     }
 }
@@ -80,6 +127,27 @@ impl eframe::App for ChronoSubApp {
             }
         }
 
+        if let Some(ref rx) = self.update_rx {
+            match rx.try_recv() {
+                Ok(Ok(update)) => {
+                    if update.urgency != UpdateUrgency::None {
+                        self.available_update = Some(update);
+                    }
+                    self.update_error = None;
+                    self.update_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.update_error = Some(e);
+                    self.update_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.update_error = Some("Update checker disconnected unexpectedly.".to_string());
+                    self.update_rx = None;
+                }
+            }
+        }
+
         // ----------------------------------------------------------------
         // 2. Handle drag-and-drop
         // ----------------------------------------------------------------
@@ -119,6 +187,34 @@ impl eframe::App for ChronoSubApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("ChronoSub ⚡");
             ui.label("Blazing-fast subtitle synchronization — no Python, no FFmpeg.");
+            ui.label(format!(
+                "Version {}",
+                version_string(self.current_version)
+            ));
+            if let Some(update) = &self.available_update {
+                let urgency_text = match update.urgency {
+                    UpdateUrgency::Major => "Major update available",
+                    UpdateUrgency::Minor => "Significant update available",
+                    UpdateUrgency::None => "Up to date",
+                };
+                ui.colored_label(
+                    if update.urgency == UpdateUrgency::Major {
+                        egui::Color32::RED
+                    } else {
+                        egui::Color32::YELLOW
+                    },
+                    format!(
+                        "{urgency_text}: {}",
+                        version_string(update.latest_version)
+                    ),
+                );
+                ui.label(&update.instructions);
+                ui.hyperlink_to("Open release page", &update.html_url);
+            } else if self.update_rx.is_some() {
+                ui.label("Checking for updates…");
+            } else if let Some(err) = &self.update_error {
+                ui.label(format!("Update check unavailable: {err}"));
+            }
             ui.separator();
 
             // File status
@@ -260,6 +356,22 @@ impl eframe::App for ChronoSubApp {
                 );
             }
         });
+
+        if let Some(update) = &self.available_update {
+            if update.urgency == UpdateUrgency::Major {
+                egui::Window::new("Major update required")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        ui.label(format!(
+                            "A major release ({}) is available and contains critical changes that should be installed.",
+                            version_string(update.latest_version)
+                        ));
+                        ui.label(&update.instructions);
+                        ui.hyperlink_to("Open release page", &update.html_url);
+                    });
+            }
+        }
     }
 }
 
@@ -388,6 +500,11 @@ impl ChronoSubApp {
 // ---------------------------------------------------------------------------
 
 fn main() -> eframe::Result<()> {
+    if env::args().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{}", version_string(current_app_version()));
+        return Ok(());
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([600.0, 480.0])

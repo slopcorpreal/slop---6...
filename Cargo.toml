@@ -3,9 +3,17 @@ name = "chronosub"
 version = "0.1.0"
 edition = "2021"
 description = "ChronoSub ⚡ — Blazing-fast native subtitle synchronization"
+license = "MPL-2.0"
+repository = "https://github.com/slopcorpreal/slop---6..."
+homepage = "https://github.com/slopcorpreal/slop---6..."
+keywords = ["subtitle", "sync", "srt", "gui", "video"]
+categories = ["multimedia", "gui"]
+build = "build.rs"
 
 [dependencies]
 eframe = "0.24"
 symphonia = { version = "0.5", features = ["all"] }
 rustfft = "6.1"
 rayon = "1.8"
+serde = { version = "1", features = ["derive"] }
+ureq = { version = "2.10", features = ["json"] }
