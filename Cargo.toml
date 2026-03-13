@@ -1,0 +1,11 @@
+[package]
+name = "chronosub"
+version = "0.1.0"
+edition = "2021"
+description = "ChronoSub ⚡ — Blazing-fast native subtitle synchronization"
+
+[dependencies]
+eframe = "0.24"
+symphonia = { version = "0.5", features = ["all"] }
+rustfft = "6.1"
+rayon = "1.8"
