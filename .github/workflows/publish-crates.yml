@@ -19,6 +19,10 @@ jobs:
         run: |
           VERSION="$(sed -nE 's/^version = "([0-9]+)\.[0-9]+\.[0-9]+"$/\1/p' Cargo.toml | head -n1)"
           PATCH="$(sed -nE 's/^version = "[0-9]+\.[0-9]+\.([0-9]+)"$/\1/p' Cargo.toml | head -n1)"
+          if [ -z "$VERSION" ] || [ -z "$PATCH" ]; then
+            echo "Unable to parse MAJOR/PATCH from Cargo.toml version."
+            exit 1
+          fi
           COMMIT_COUNT="$(git rev-list --count HEAD)"
           TAG="v${VERSION}.${COMMIT_COUNT}.${PATCH}"
           echo "expected_tag=$TAG" >> "$GITHUB_OUTPUT"
