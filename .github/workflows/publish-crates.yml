@@ -13,17 +13,27 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Verify release tag and commit count policy
+      - name: Compute expected release tag
+        id: compute_tag
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          if [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
+          VERSION="$(sed -nE 's/^version = "([0-9]+)\.[0-9]+\.[0-9]+"$/\1/p' Cargo.toml | head -n1)"
+          PATCH="$(sed -nE 's/^version = "[0-9]+\.[0-9]+\.([0-9]+)"$/\1/p' Cargo.toml | head -n1)"
+          if [ -z "$VERSION" ] || [ -z "$PATCH" ]; then
+            echo "Unable to parse MAJOR/PATCH from Cargo.toml version."
+            exit 1
           fi
-          TAG_MINOR="$(echo "$TAG" | sed -E 's/^v[0-9]+\.([0-9]+)\.[0-9]+$/\1/')"
           COMMIT_COUNT="$(git rev-list --count HEAD)"
-          if [ "$TAG_MINOR" != "$COMMIT_COUNT" ]; then
-            echo "Tag minor ($TAG_MINOR) must match commit count ($COMMIT_COUNT)."
+          TAG="v${VERSION}.${COMMIT_COUNT}.${PATCH}"
+          echo "expected_tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Verify release tag policy
+        if: ${{ github.event_name == 'release' }}
+        shell: bash
+        run: |
+          EXPECTED="${{ steps.compute_tag.outputs.expected_tag }}"
+          ACTUAL="${{ github.event.release.tag_name }}"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "Release tag ($ACTUAL) must match computed tag ($EXPECTED)."
             exit 1
           fi
       - name: Publish to crates.io

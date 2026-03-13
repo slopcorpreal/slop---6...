@@ -5,16 +5,39 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (vMAJOR.MINOR.PATCH)"
-        required: true
 
 permissions:
   contents: write
 
 jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.compute.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: compute
+        name: Compute release tag
+        shell: bash
+        run: |
+          VERSION="$(sed -nE 's/^version = "([0-9]+)\.[0-9]+\.[0-9]+"$/\1/p' Cargo.toml | head -n1)"
+          PATCH="$(sed -nE 's/^version = "[0-9]+\.[0-9]+\.([0-9]+)"$/\1/p' Cargo.toml | head -n1)"
+          if [ -z "$VERSION" ] || [ -z "$PATCH" ]; then
+            echo "Unable to parse MAJOR/PATCH from Cargo.toml version."
+            exit 1
+          fi
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          TAG="v${VERSION}.${COMMIT_COUNT}.${PATCH}"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "$TAG" ]; then
+            echo "Pushed tag (${GITHUB_REF_NAME}) must match computed tag (${TAG})."
+            exit 1
+          fi
+
   build:
+    needs: meta
     strategy:
       fail-fast: false
       matrix:
@@ -35,20 +58,6 @@ jobs:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Validate tag minor equals commit count
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          fi
-          TAG_MINOR="$(echo "$TAG" | sed -E 's/^v[0-9]+\.([0-9]+)\.[0-9]+$/\1/')"
-          COMMIT_COUNT="$(git rev-list --count HEAD)"
-          if [ "$TAG_MINOR" != "$COMMIT_COUNT" ]; then
-            echo "Tag minor ($TAG_MINOR) must match commit count ($COMMIT_COUNT)."
-            exit 1
-          fi
 
       - uses: Swatinem/rust-cache@v2
 
@@ -73,7 +82,7 @@ jobs:
           path: dist/*
 
   publish-release:
-    needs: build
+    needs: [meta, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -82,5 +91,5 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          tag_name: ${{ needs.meta.outputs.release_tag }}
           files: dist/**/*
