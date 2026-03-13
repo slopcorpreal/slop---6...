@@ -61,9 +61,10 @@ Requires Rust 1.72+ (matches the `eframe` MSRV).
 ## CI and release automation
 
 - Pull requests and pushes to `main` run `cargo check` + `cargo test`.
-- Tagging `vMAJOR.MINOR.PATCH` builds standalone binaries for Linux/macOS/Windows and publishes a GitHub release.
+- Release workflows auto-compute the release tag as `vMAJOR.<commit-count>.PATCH`; pushing a tag must match this computed value.
+- `workflow_dispatch` release runs use the auto-computed tag to publish standalone binaries for Linux/macOS/Windows and create a GitHub release.
 - Crates publishing is automated from the published release workflow.
-- Release workflows validate that tag `MINOR` equals the repository commit count.
+- Release workflows validate that the release tag matches the computed version from VCS state.
 
 ---
 
