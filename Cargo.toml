@@ -3,7 +3,6 @@ name = "chronosub"
 version = "0.1.0"
 edition = "2021"
 description = "ChronoSub ⚡ — Blazing-fast native subtitle synchronization"
-repository = "https://github.com/slopcorpreal/slop---6..."
 
 [dependencies]
 eframe = "0.24"

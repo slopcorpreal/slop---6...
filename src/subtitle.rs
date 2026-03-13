@@ -55,13 +55,13 @@ pub fn parse_srt(content: &str) -> Result<Vec<SubEntry>, String> {
 }
 
 /// Parse a timestamp line of the form `HH:MM:SS,mmm --> HH:MM:SS,mmm`.
+/// Handles varied spacing around `-->` (e.g. no spaces, extra spaces, tabs).
 fn parse_timestamp_line(line: &str) -> Result<(i64, i64), String> {
-    let parts: Vec<&str> = line.splitn(2, " --> ").collect();
-    if parts.len() != 2 {
-        return Err(format!("Invalid timestamp line: {:?}", line));
-    }
-    let start = parse_srt_time(parts[0].trim())?;
-    let end = parse_srt_time(parts[1].trim())?;
+    let arrow = line
+        .find("-->")
+        .ok_or_else(|| format!("Invalid timestamp line: {:?}", line))?;
+    let start = parse_srt_time(line[..arrow].trim())?;
+    let end = parse_srt_time(line[arrow + "-->".len()..].trim())?;
     Ok((start, end))
 }
 
@@ -202,6 +202,22 @@ How are you?
         for (a, b) in entries.iter().zip(re_parsed.iter()) {
             assert_eq!(a.start_ms, b.start_ms);
             assert_eq!(a.end_ms, b.end_ms);
+        }
+    }
+
+    #[test]
+    fn test_parse_timestamp_line_flexible_arrow() {
+        // SRTs in the wild use varying spacing around -->
+        let variants = [
+            "00:00:01,500 --> 00:00:04,000",  // standard
+            "00:00:01,500-->00:00:04,000",    // no spaces
+            "00:00:01,500  -->  00:00:04,000", // extra spaces
+        ];
+        for v in &variants {
+            let (start, end) = parse_timestamp_line(v)
+                .unwrap_or_else(|e| panic!("Failed on {:?}: {}", v, e));
+            assert_eq!(start, 1_500, "start mismatch for {:?}", v);
+            assert_eq!(end, 4_000, "end mismatch for {:?}", v);
         }
     }
 

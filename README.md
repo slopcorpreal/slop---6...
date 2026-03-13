@@ -8,7 +8,7 @@ Drop a video file and an `.srt` subtitle file into the window; ChronoSub analyse
 
 ## Features
 
-| | ChronoSub | Python tools |
+| Feature | ChronoSub | Python tools |
 |---|---|---|
 | Setup | Double-click the binary | Install Python + pip + virtualenv + system FFmpeg |
 | Speed | < 2 s for a feature film | 1–3 minutes |

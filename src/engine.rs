@@ -21,8 +21,11 @@ pub const ENERGY_RATE_HZ: usize = 100;
 // Audio extraction
 // ---------------------------------------------------------------------------
 
-/// Decode the first audio track from `path` and return a mono-PCM sample vector
-/// together with the original sample rate.
+/// Decode the first audio track from `path` and compute its 100 Hz RMS energy
+/// envelope in a single streaming pass, without buffering the full-rate PCM.
+///
+/// Returns `(energy_envelope, sample_rate)`.  The energy array has one element
+/// per 10 ms of audio at 100 Hz.
 pub fn decode_audio(path: &Path) -> Result<(Vec<f32>, u32), String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Cannot open video file: {}", e))?;
@@ -40,22 +43,34 @@ pub fn decode_audio(path: &Path) -> Result<(Vec<f32>, u32), String> {
 
     let mut format = probed.format;
 
-    // Find the first decodable audio track
+    // Find the first audio track: require sample_rate and channels to be set
+    // so we never accidentally select a video or data track.
     let track = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find(|t| {
+            t.codec_params.codec != CODEC_TYPE_NULL
+                && t.codec_params.sample_rate.is_some()
+                && t.codec_params.channels.is_some()
+        })
         .ok_or_else(|| "No audio track found in file".to_string())?;
 
     let track_id = track.id;
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(44_100);
+    let sample_rate = track.codec_params.sample_rate.unwrap();
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(|e| format!("Cannot create decoder: {}", e))?;
 
-    let mut all_samples: Vec<f32> = Vec::new();
+    // Streaming energy accumulator — avoids storing the full-rate PCM track.
+    let window_size = (sample_rate as usize / ENERGY_RATE_HZ).max(1);
+    let mut energy: Vec<f32> = Vec::new();
+    let mut win_sum_sq: f32 = 0.0;
+    let mut win_count: usize = 0;
+
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    // Track the spec the sample buffer was created with so we can detect changes.
+    let mut buf_spec: Option<symphonia::core::audio::SignalSpec> = None;
 
     loop {
         let packet = match format.next_packet() {
@@ -83,44 +98,67 @@ pub fn decode_audio(path: &Path) -> Result<(Vec<f32>, u32), String> {
         };
 
         let spec = *decoded.spec();
-        let n_frames = decoded.capacity() as u64;
         let n_channels = spec.channels.count();
+        let needed_capacity = decoded.frames() * n_channels;
 
-        if sample_buf.is_none() {
-            sample_buf = Some(SampleBuffer::<f32>::new(n_frames, spec));
+        // Reinitialise the sample buffer when the spec or capacity changes.
+        // This handles packets with a larger frame count or a different channel
+        // layout, which would otherwise cause `copy_interleaved_ref` to panic.
+        // Compare against `buf_spec` (the spec the buffer was built with), not
+        // against `spec` itself, which would always be equal.
+        let needs_new_buf = sample_buf
+            .as_ref()
+            .map_or(true, |b| needed_capacity > b.capacity() || buf_spec != Some(spec));
+        if needs_new_buf {
+            sample_buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
+            buf_spec = Some(spec);
         }
 
         if let Some(ref mut buf) = sample_buf {
             buf.copy_interleaved_ref(decoded);
-            // Mix down to mono
+            // Mix down to mono and accumulate into the current energy window
             for chunk in buf.samples().chunks(n_channels) {
                 let mono: f32 = chunk.iter().sum::<f32>() / n_channels as f32;
-                all_samples.push(mono);
+                win_sum_sq += mono * mono;
+                win_count += 1;
+                if win_count >= window_size {
+                    energy.push((win_sum_sq / win_count as f32).sqrt());
+                    win_sum_sq = 0.0;
+                    win_count = 0;
+                }
             }
         }
     }
 
-    if all_samples.is_empty() {
+    // Flush any partial window at the end of the stream
+    if win_count > 0 {
+        energy.push((win_sum_sq / win_count as f32).sqrt());
+    }
+
+    if energy.is_empty() {
         return Err("No audio samples decoded from file".to_string());
     }
 
-    Ok((all_samples, sample_rate))
+    Ok((energy, sample_rate))
 }
 
 // ---------------------------------------------------------------------------
-// Energy envelope
+// Energy envelope (standalone, used in tests and as a building block)
 // ---------------------------------------------------------------------------
 
-/// Compute a short-time RMS energy envelope at [`ENERGY_RATE_HZ`] Hz.
+/// Compute a short-time RMS energy envelope at [`ENERGY_RATE_HZ`] Hz from
+/// raw PCM samples.
 ///
-/// Given raw PCM samples at `sample_rate` Hz, each output sample covers
-/// `sample_rate / ENERGY_RATE_HZ` PCM samples (≈ 10 ms window).
+/// Each output sample covers `sample_rate / ENERGY_RATE_HZ` PCM samples
+/// (≈ 10 ms window).  Parallelism is applied across windows only; the inner
+/// per-window sum uses a plain iterator to avoid nested-parallelism overhead.
 pub fn compute_energy_envelope(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     let window = (sample_rate as usize / ENERGY_RATE_HZ).max(1);
     samples
         .par_chunks(window)
         .map(|chunk| {
-            let mean_sq: f32 = chunk.par_iter().map(|&s| s * s).sum::<f32>() / chunk.len() as f32;
+            let mean_sq: f32 =
+                chunk.iter().map(|&s| s * s).sum::<f32>() / chunk.len() as f32;
             mean_sq.sqrt()
         })
         .collect()
@@ -135,8 +173,11 @@ pub fn compute_energy_envelope(samples: &[f32], sample_rate: u32) -> Vec<f32> {
 /// cross-correlation.
 ///
 /// A positive result means the subtitles are *ahead* of the audio (should be
-/// delayed); a negative result means the subtitles are *behind* (should be
+/// shifted back); a negative result means they are *behind* (should be
 /// advanced).
+///
+/// This produces a single **constant** offset.  Variable drift (e.g. frame-
+/// rate difference, commercial-break cuts) is not handled here.
 pub fn compute_global_offset(
     audio_energy: &[f32],
     sub_expected: &[f32],
@@ -181,7 +222,9 @@ pub fn compute_global_offset(
     let (max_idx, _) = a
         .iter()
         .enumerate()
-        .max_by(|(_, c1), (_, c2)| c1.re.partial_cmp(&c2.re).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|(_, c1), (_, c2)| {
+            c1.re.partial_cmp(&c2.re).unwrap_or(std::cmp::Ordering::Equal)
+        })
         .unwrap();
 
     // Map index to a signed offset (wrap around the midpoint)
@@ -200,7 +243,8 @@ pub fn compute_global_offset(
 
 /// Result bundle returned by [`run_alignment`].
 pub struct AlignmentResult {
-    /// Detected global offset in seconds.  Positive = subs are ahead of audio.
+    /// Detected global constant offset in seconds.  Positive = subs are ahead
+    /// of the audio and will be shifted backwards; negative = subs lag.
     pub offset_secs: f32,
     /// Normalised audio energy envelope (for UI display).
     pub audio_energy: Vec<f32>,
@@ -209,15 +253,16 @@ pub struct AlignmentResult {
 }
 
 /// Run the full alignment pipeline:
-/// 1. Decode audio from `video_path`.
-/// 2. Compute 100 Hz energy envelope.
-/// 3. Parse subtitles from `sub_path`.
-/// 4. Build expected-timing signal.
-/// 5. FFT cross-correlate → global offset.
+/// 1. Stream-decode audio from `video_path` into a 100 Hz energy envelope.
+/// 2. Parse subtitles from `sub_path`.
+/// 3. Build an expected-timing signal from the cue timestamps.
+/// 4. FFT cross-correlate energy vs timing signal → constant global offset.
+///
+/// The returned offset is a single constant shift.  Variable drift (e.g. due
+/// to frame-rate differences or cut commercial breaks) is not modelled.
 pub fn run_alignment(video_path: &Path, sub_path: &Path) -> Result<AlignmentResult, String> {
-    // --- Audio ---
-    let (samples, sample_rate) = decode_audio(video_path)?;
-    let energy = compute_energy_envelope(&samples, sample_rate);
+    // --- Audio (energy envelope, streamed) ---
+    let (energy, _sample_rate) = decode_audio(video_path)?;
 
     // Normalise for display
     let max_e = energy.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

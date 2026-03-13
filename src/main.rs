@@ -142,7 +142,7 @@ impl eframe::App for ChronoSubApp {
                     }
                     ui.end_row();
 
-                    ui.label("�� Subtitles:");
+                    ui.label("📝 Subtitles:");
                     if let Some(ref p) = self.sub_path {
                         ui.label(
                             egui::RichText::new(
@@ -342,6 +342,9 @@ impl ChronoSubApp {
         // Downsample to at most PREVIEW_SAMPLES bars
         let step = ((total as f32 / available_width).ceil() as usize).max(1);
         let bar_count = (total / step).min(PREVIEW_SAMPLES);
+        if bar_count == 0 {
+            return;
+        }
         let bar_w = available_width / bar_count as f32;
 
         for i in 0..bar_count {
