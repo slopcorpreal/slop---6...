@@ -46,6 +46,27 @@ Requires Rust 1.72+ (matches the `eframe` MSRV).
 
 ---
 
+## Versioning and updates
+
+- ChronoSub uses `MAJOR.MINOR.PATCH`.
+- `MINOR` is derived from repository commit count at build time.
+- `MAJOR` is reserved for massive refactors / initial release and is always prompted in-app.
+- `MINOR` updates are treated as significant and are prompted in-app.
+- Install-aware update guidance is shown:
+  - Cargo install: `cargo install --force chronosub`
+  - Standalone binary: download the platform-matching release asset and replace the executable.
+
+---
+
+## CI and release automation
+
+- Pull requests and pushes to `main` run `cargo check` + `cargo test`.
+- Tagging `vMAJOR.MINOR.PATCH` builds standalone binaries for Linux/macOS/Windows and publishes a GitHub release.
+- Crates publishing is automated from the published release workflow.
+- Release workflows validate that tag `MINOR` equals the repository commit count.
+
+---
+
 ## Dependencies
 
 | Crate | Purpose |
