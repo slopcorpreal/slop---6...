@@ -56,7 +56,10 @@ pub fn decode_audio(path: &Path) -> Result<(Vec<f32>, u32), String> {
         .ok_or_else(|| "No audio track found in file".to_string())?;
 
     let track_id = track.id;
-    let sample_rate = track.codec_params.sample_rate.unwrap();
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| "Audio track is missing sample rate".to_string())?;
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
@@ -320,7 +323,11 @@ pub fn default_output_path(sub_path: &Path) -> std::path::PathBuf {
         .extension()
         .unwrap_or_default()
         .to_string_lossy();
-    let new_name = format!("{}_synced.{}", stem, ext);
+    let new_name = if ext.is_empty() {
+        format!("{}_synced", stem)
+    } else {
+        format!("{}_synced.{}", stem, ext)
+    };
     sub_path.with_file_name(new_name)
 }
 
@@ -396,5 +403,12 @@ mod tests {
         let p = std::path::Path::new("/home/user/movie.srt");
         let out = default_output_path(p);
         assert_eq!(out, std::path::Path::new("/home/user/movie_synced.srt"));
+    }
+
+    #[test]
+    fn test_default_output_path_no_extension() {
+        let p = std::path::Path::new("/home/user/movie");
+        let out = default_output_path(p);
+        assert_eq!(out, std::path::Path::new("/home/user/movie_synced"));
     }
 }
